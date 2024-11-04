@@ -1,0 +1,234 @@
+import datetime
+import pandas as pd
+import re
+import os
+
+def extract_week_number(filename):
+    """
+    파일 이름에서 주차 번호를 추출합니다.
+    예: '46w.txt'에서 46을 추출.
+    
+    Parameters:
+    - filename (str): 파일 이름
+    
+    Returns:
+    - int: 주차 번호
+    """
+    match = re.match(r'(\d{1,2})w\.txt', filename, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    else:
+        raise ValueError("파일 이름이 '숫자w.txt' 형식이 아닙니다.")
+
+def get_week_start_monday(year, week_number):
+    """
+    주차 번호를 기준으로 해당 주의 월요일 날짜를 반환합니다.
+    
+    Parameters:
+    - year (int): 연도
+    - week_number (int): 주차 번호
+    
+    Returns:
+    - datetime.date: 주의 월요일 날짜
+    """
+    try:
+        monday = datetime.date.fromisocalendar(year, week_number, 1)
+        return monday
+    except ValueError as e:
+        raise ValueError(f"올바르지 않은 주차입니다: {e}")
+
+def parse_txt_to_schedule(txt_path, year, week_numbers, end_date, month):
+    """
+    TXT 파일을 읽어 일정표를 추출하고 데이터프레임으로 반환합니다.
+
+    Parameters:
+    - txt_path (str): TXT 파일 경로
+    - year (int): 연도 (예: 2024)
+    - week_numbers (list): 처리할 주차 번호 리스트 (예: [46, 47])
+    - end_date (datetime.date): 출력할 일정의 종료 날짜
+    - month (int): 해당 월 (예: 11)
+
+    Returns:
+    - pd.DataFrame: 추출된 일정표 데이터
+    """
+    try:
+        with open(txt_path, 'r', encoding='utf-8') as file:
+            lines = file.readlines()
+    except FileNotFoundError:
+        print(f"파일을 찾을 수 없습니다: {txt_path}")
+        return pd.DataFrame()  # 빈 데이터프레임 반환
+
+    schedule = []
+    current_week = None
+    current_date = None
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # 주차 정보 찾기 (예: "46w", "47w")
+        week_match = re.match(r'(\d{1,2})w', line, re.IGNORECASE)
+        if week_match:
+            week_number = int(week_match.group(1))
+            if week_number in week_numbers:
+                current_week = week_number
+                week_start_monday = get_week_start_monday(year, current_week)
+                print(f"찾은 주차: {current_week}w, 시작일: {week_start_monday}")
+            else:
+                current_week = None
+            i += 1
+            continue
+
+        # 현재 주차가 유효한 경우에만 처리
+        if current_week:
+            # 날짜 번호 찾기 (숫자)
+            if line.isdigit():
+                day_number = int(line)
+                try:
+                    # 날짜 계산: 주의 월요일 + (day_number - 3) 일
+                    # day_number=3 → week_start_monday +0 → Monday
+                    date = week_start_monday + datetime.timedelta(days=(day_number - 3))
+                    
+                    # 날짜가 범위 내에 있는지 확인
+                    if datetime.date(year, month, 4) <= date <= end_date:
+                        # 주말(토요일=5, 일요일=6) 건너뛰기
+                        if date.weekday() >= 5:
+                            print(f"날짜 {date}은(는) 주말입니다. 건너뜁니다.")
+                            current_date = None
+                        else:
+                            current_date = date
+                            print(f"유효한 날짜 설정: {current_date}")
+                    else:
+                        current_date = None
+                        print(f"날짜 {date}은(는) 범위를 벗어났습니다. 건너뜁니다.")
+                except ValueError:
+                    print(f"유효하지 않은 날짜: {year}-{month}-{day_number}. 건너뜁니다.")
+                    current_date = None
+                i += 1
+                continue
+
+            # 일정 정보 처리 (시간과 회의명)
+            if current_date:
+                # 시간 라인 찾기 (예: "08:00")
+                time_match = re.match(r'(\d{1,2}:\d{2})', line)
+                if time_match:
+                    time = time_match.group(1)
+                    if i + 1 < len(lines):
+                        subject_line = lines[i + 1].strip()
+
+                        # 주관과 회의명 분리
+                        subject = ''
+                        meeting = ''
+                        place = ''
+
+                        # 주관 정보 추출 (대괄호 안의 내용)
+                        subject_match = re.match(r'\[(.*?)\]\s*(.*)', subject_line)
+                        if subject_match:
+                            subject = f'[{subject_match.group(1)}]'
+                            meeting = subject_match.group(2).strip()
+                        else:
+                            # 'x'로 시작하는 경우 주관 없음
+                            if subject_line.startswith('x '):
+                                meeting = subject_line[2:].strip()
+                            else:
+                                meeting = subject_line.strip()
+
+                        # 날짜 형식 변환 (요일을 한글로)
+                        weekday_korean = ['월', '화', '수', '목', '금', '토', '일']
+                        weekday = weekday_korean[current_date.weekday()]
+                        date_str = current_date.strftime(f'%m/%d({weekday})')
+
+                        schedule.append({
+                            '날짜': date_str,
+                            '시간': time,
+                            '주관': subject,
+                            '회의명': meeting,
+                            '장소': place  # 현재 예시 데이터에는 장소 정보가 없어 빈 칸으로 유지
+                        })
+                        print(f"추가된 일정: {date_str}, {time}, {subject}, {meeting}")
+                    i += 2  # 시간과 주관/회의명 라인 건너뛰기
+                    continue
+        # 나머지 라인 건너뛰기
+        i += 1
+
+    df = pd.DataFrame(schedule)
+    return df
+
+def save_schedule(df, output_path, file_type='xlsx'):
+    """
+    데이터프레임을 CSV 또는 Excel 파일로 저장합니다.
+
+    Parameters:
+    - df (pd.DataFrame): 일정 데이터프레임
+    - output_path (str): 저장할 파일 경로
+    - file_type (str): 저장할 파일 형식 ('csv' 또는 'xlsx')
+    """
+    if df.empty:
+        print("저장할 일정 데이터가 없습니다.")
+        return
+
+    try:
+        if file_type.lower() == 'csv':
+            df.to_csv(output_path, index=False, encoding='utf-8-sig')
+            print(f"일정이 {output_path}에 저장되었습니다.")
+        elif file_type.lower() in ['excel', 'xlsx']:
+            df.to_excel(output_path, index=False)
+            print(f"일정이 {output_path}에 저장되었습니다.")
+        else:
+            raise ValueError("file_type은 'csv' 또는 'xlsx'이어야 합니다.")
+    except Exception as e:
+        print(f"{file_type.upper()} 저장 중 오류 발생: {e}")
+
+def main():
+    # 사용자로부터 주차 번호 입력 받기
+    try:
+        week_input = input("처리할 주차 번호를 입력하세요 (예: 46): ").strip()
+        current_week_number = int(week_input)
+    except ValueError:
+        print("유효한 주차 번호를 입력하세요 (숫자).")
+        return
+
+    # 현재 주차와 다음 주차 번호 설정
+    week_numbers = [current_week_number, current_week_number + 1]
+
+    # 파일 이름 설정 (예: 46w.txt)
+    filename = f"{current_week_number}w.txt"
+    script_dir = os.getcwd()  # 현재 작업 디렉토리
+    txt_file_path = os.path.join(script_dir, filename)
+
+    # 연도 설정 (필요 시 동적으로 설정 가능)
+    year = 2024
+
+    # 일정 출력의 종료 날짜 설정 (예: 11/15(금))
+    # 여기서는 예시로 11월 15일로 설정하였습니다. 필요에 따라 변경하세요.
+    end_date = datetime.date(2024, 11, 15)
+
+    # 해당 월 설정 (예: 11월)
+    month = 11
+
+    # 파일 존재 여부 확인
+    if not os.path.isfile(txt_file_path):
+        print(f"파일을 찾을 수 없습니다: {txt_file_path}")
+        return
+
+    # 일정 데이터프레임 생성
+    schedule_df = parse_txt_to_schedule(
+        txt_path=txt_file_path,
+        year=year,
+        week_numbers=week_numbers,
+        end_date=end_date,
+        month=month
+    )
+
+    if schedule_df.empty:
+        print("추출된 일정이 없습니다.")
+    else:
+        # 저장할 파일 이름 설정 (예: schedule_46w.xlsx)
+        output_filename = f"schedule_{current_week_number}w.xlsx"
+        output_excel_path = os.path.join(script_dir, output_filename)
+
+        # Excel 파일로 저장
+        save_schedule(schedule_df, output_excel_path, file_type='xlsx')
+
+if __name__ == "__main__":
+    main()
